@@ -12,7 +12,9 @@ The agent is intentionally READ-ONLY + JOB-TRIGGER:
   - query_results           → SQL SELECT against bom_extractions (fast, read-only)
   - get_overlay_path        → pure logic (no I/O)
 
-Extraction runs in a Databricks Job (sld-bom-extraction, job_id=811920885410866).
+Extraction runs in a Databricks Job (sld-bom-extraction).
+Job IDs and the SQL warehouse ID are read from environment variables at serving time
+(set via the serving endpoint config or by DAB/setup.py at deploy time).
 The web application polls the Jobs REST API and/or bom_extractions.progress_msg
 for live status — the agent never waits for jobs to complete.
 """
@@ -24,10 +26,12 @@ import mlflow
 from mlflow.pyfunc import ResponsesAgent
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# ⚠️  UPDATE THESE VALUES FOR EACH NEW DEPLOYMENT
 # This file is loaded by MLflow in isolation at serving time and cannot use config.py.
-# Job IDs are printed by setup.py Step 9. Warehouse ID is visible in the Databricks SQL UI.
-CATALOG      = "serverless_stable_bach_catalog"   # ← your catalog name
+# All workspace-specific values are read from environment variables, which are set:
+#   - automatically by DAB (databricks bundle deploy --target full)
+#   - or manually in the serving endpoint environment config
+# The fallback strings below are only used if the env vars are missing.
+CATALOG      = os.environ.get("DATABRICKS_CATALOG", "")
 SCHEMA       = "bom_parser"
 VOLUME       = "electrical_diagrams"
 TABLE_NAME   = f"{CATALOG}.{SCHEMA}.bom_extractions"
@@ -38,10 +42,10 @@ DEFAULT_MODEL_ENDPOINT  = "databricks-claude-sonnet-4-6"
 DEFAULT_ENABLE_RETRY    = True
 DEFAULT_MAX_RETRIES     = 2
 DEFAULT_THRESHOLD       = 0.75
-SQL_WAREHOUSE_ID        = "61acc98b38c08e84"   # ← your SQL warehouse ID
-EXTRACTION_JOB_ID       = 811920885410866      # ← sld-bom-extraction job ID (from setup.py)
-MATCHING_JOB_ID         = 330529910000908      # ← sld-bom-matching job ID (from setup.py)
-MATCHES_TABLE           = f"{CATALOG}.{SCHEMA}.reference_matches"
+SQL_WAREHOUSE_ID  = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
+EXTRACTION_JOB_ID = int(os.environ.get("EXTRACTION_JOB_ID", "0") or "0")
+MATCHING_JOB_ID   = int(os.environ.get("MATCHING_JOB_ID",   "0") or "0")
+MATCHES_TABLE     = f"{CATALOG}.{SCHEMA}.reference_matches"
 
 # ── Agent system prompt ───────────────────────────────────────────────────────
 AGENT_SYSTEM_PROMPT = """You are the SLD-to-BOM extraction agent for Schneider Electric electrical diagrams.

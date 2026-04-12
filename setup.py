@@ -415,13 +415,104 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 11 — Create Vector Search endpoint _(Tier 2+)_
+# MAGIC
+# MAGIC Creates the Vector Search endpoint used by the reference matching pipeline.
+# MAGIC This step is safe to re-run — it skips creation if the endpoint already exists.
+# MAGIC
+# MAGIC > **Prerequisite:** Run `generate_material_data` first so the `material` table exists.
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Vector Search endpoint
+from databricks.sdk.service.vectorsearch import EndpointType
+
+VS_ENDPOINT_NAME = "sld-bom-vs"
+
+existing_endpoints = {e.name for e in w.vector_search_endpoints.list_endpoints()}
+if VS_ENDPOINT_NAME not in existing_endpoints:
+    print(f"Creating VS endpoint '{VS_ENDPOINT_NAME}'… (takes 2–5 min)")
+    w.vector_search_endpoints.create_endpoint_and_wait(
+        name=VS_ENDPOINT_NAME,
+        endpoint_type=EndpointType.STANDARD,
+    )
+    print(f"✓ VS endpoint '{VS_ENDPOINT_NAME}' ready")
+else:
+    print(f"✓ VS endpoint '{VS_ENDPOINT_NAME}' already exists")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 12 — Create Vector Search index _(Tier 2+)_
+# MAGIC
+# MAGIC Creates a Delta Sync index on `material.product_description` using
+# MAGIC `databricks-gte-large-en` embeddings. Initial sync starts automatically.
+# MAGIC
+# MAGIC > The matching notebook (`sld_bom_matching_nb`) will wait for the index to be ready on first use.
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Vector Search index on material table
+from databricks.sdk.service.vectorsearch import (
+    VectorIndexType, DeltaSyncVectorIndexSpecRequest,
+    EmbeddingSourceColumn, PipelineType,
+)
+
+VS_INDEX_NAME  = f"{CATALOG}.{SCHEMA}.material_vs_index"
+MATERIAL_TABLE = f"{CATALOG}.{SCHEMA}.material"
+
+# Guard: ensure material table exists
+_mat_exists = spark.sql(
+    f"SHOW TABLES IN {CATALOG}.{SCHEMA} LIKE 'material'"
+).count() > 0
+if not _mat_exists:
+    print("⚠ material table not found — run generate_material_data first, then re-run this cell")
+else:
+    existing_indexes = {
+        i.name
+        for i in w.vector_search_indexes.list_indexes(endpoint_name=VS_ENDPOINT_NAME)
+    }
+    if VS_INDEX_NAME not in existing_indexes:
+        print(f"Creating VS index '{VS_INDEX_NAME}'…")
+        w.vector_search_indexes.create_index(
+            name=VS_INDEX_NAME,
+            endpoint_name=VS_ENDPOINT_NAME,
+            primary_key="reference",
+            index_type=VectorIndexType.DELTA_SYNC,
+            delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+                source_table=MATERIAL_TABLE,
+                pipeline_type=PipelineType.TRIGGERED,
+                embedding_source_columns=[
+                    EmbeddingSourceColumn(
+                        name="product_description",
+                        embedding_model_endpoint_name="databricks-gte-large-en",
+                    )
+                ],
+            ),
+        )
+        print(f"✓ VS index '{VS_INDEX_NAME}' created — initial sync starting")
+        print(f"  Monitor progress: Catalog → Vector Search → {VS_ENDPOINT_NAME}")
+    else:
+        print(f"✓ VS index '{VS_INDEX_NAME}' already exists")
+    print(f"  Index: {VS_INDEX_NAME}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Next steps
 # MAGIC
-# MAGIC Once all checks pass (Steps 1–8) and jobs are created (Steps 9–10):
+# MAGIC Once all steps pass:
 # MAGIC
-# MAGIC 1. **Populate catalog data** — run `generate_material_data` notebook to create the Schneider Electric product catalog, stock, and work order tables _(skip if bringing your own catalog)_
-# MAGIC 2. **Register the agent** _(Tier 3+ only)_ — open `sld_bom_agent_model.py`, update the hardcoded `CATALOG`, `SQL_WAREHOUSE_ID`, `EXTRACTION_JOB_ID`, `MATCHING_JOB_ID` at the top, then run `sld_bom_agent_uc` cells 1 → 8
-# MAGIC 3. **Deploy the app** _(Tier 4 only)_ — `app/app.yaml` was already patched by Step 10; run:
+# MAGIC | Tier | Action |
+# MAGIC |------|--------|
+# MAGIC | 2 | Run `generate_material_data` → then Steps 11–12 to create the VS endpoint and index |
+# MAGIC | 3 | Run the `sld-bom-agent-registration` job (created by DAB `full` target), then create a Model Serving endpoint from the registered UC model |
+# MAGIC | 4 | Deploy the app via DAB: `databricks bundle deploy --target full` |
+# MAGIC
+# MAGIC **Alternative (no DAB):**
+# MAGIC 1. **Populate catalog data** — run `generate_material_data`
+# MAGIC 2. **Register the agent** _(Tier 3+)_ — run `sld_bom_agent_uc` notebook (all cells)
+# MAGIC 3. **Deploy the app** _(Tier 4)_ — `app/app.yaml` was patched by Step 10; run:
 # MAGIC    ```bash
 # MAGIC    databricks apps create sld-bom-parser
 # MAGIC    databricks apps deploy sld-bom-parser \

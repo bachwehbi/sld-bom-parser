@@ -1,12 +1,140 @@
 bundle:
   name: sld-bom-parser
 
+# ── Variables ─────────────────────────────────────────────────────────────────
+# Override at deploy time: databricks bundle deploy --target <t> --var catalog=<name>
+variables:
+  catalog:
+    description: >
+      Unity Catalog catalog name. Must already exist and you must have
+      CREATE SCHEMA privilege on it.
+    default: serverless_stable_bach_catalog
+  schema:
+    description: UC schema (default bom_parser — do not change unless you also update config.py)
+    default: bom_parser
+
+# ── Shared resources — deployed by ALL targets ────────────────────────────────
+resources:
+  jobs:
+    extraction:
+      name: sld-bom-extraction
+      description: "SLD-to-BOM: extract components from a PDF single-line diagram"
+      max_concurrent_runs: 1
+      timeout_seconds: 3600
+      tasks:
+        - task_key: run
+          notebook_task:
+            notebook_path: ./sld_to_bom_pipeline.py
+            base_parameters:
+              file_name: ""
+              model: databricks-claude-sonnet-4-6
+              enable_retry: "true"
+              max_retries: "1"
+              threshold: "0.75"
+      tags:
+        project: sld-bom-parser
+        tier: "1"
+
+    matching:
+      name: sld-bom-matching
+      description: "SLD-to-BOM: match extracted components to product references (VS + LLM)"
+      max_concurrent_runs: 1
+      timeout_seconds: 3600
+      tasks:
+        - task_key: run
+          notebook_task:
+            notebook_path: ./sld_bom_matching_nb.py
+            base_parameters:
+              file_name: ""
+              top_n: "3"
+              preferred_tier: ""
+              agent_threshold: "3"
+              vs_index_name: ${var.catalog}.${var.schema}.material_vs_index
+      tags:
+        project: sld-bom-parser
+        tier: "2"
+
+# ── Targets ───────────────────────────────────────────────────────────────────
 targets:
+
+  # ── dev: safe sandbox — names prefixed with [dev <user>] so no prod conflicts ──
+  # Deploy: databricks bundle deploy --target dev
+  # Run job: databricks bundle run --target dev extraction
+  # Destroy: databricks bundle destroy --target dev
   dev:
     mode: development
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: serverless_stable_bach_catalog
+      schema: bom_parser
+
+  # ── extraction (Tiers 1+2): extraction pipeline + reference matching ─────────
+  # Deploy: databricks bundle deploy --target extraction
+  # Optionally override catalog: --var catalog=<your_catalog>
+  extraction:
+    mode: production
     default: true
     workspace:
-      profile: DEFAULT
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: serverless_stable_bach_catalog
+      schema: bom_parser
 
-include:
-  - resources/*.yml
+  # ── full (Tiers 1-4): complete stack including agent + web app ───────────────
+  # Prerequisites before deploying:
+  #   1. Run setup.py (all steps) in the Databricks workspace
+  #   2. Run generate_material_data notebook (creates material/stock/work_orders tables)
+  #   3. Run setup.py Steps 11-12 (VS endpoint + index)
+  # Deploy: databricks bundle deploy --target full
+  # After deploy: trigger the sld-bom-agent-registration job once to register the model,
+  #               then create a Model Serving endpoint from the registered UC model.
+  full:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: serverless_stable_bach_catalog
+      schema: bom_parser
+    resources:
+      jobs:
+        agent_registration:
+          name: sld-bom-agent-registration
+          description: "SLD-to-BOM: register the conversational agent in Unity Catalog (run once after deploy)"
+          max_concurrent_runs: 1
+          timeout_seconds: 7200
+          tasks:
+            - task_key: register
+              notebook_task:
+                notebook_path: ./sld_bom_agent_uc.py
+          tags:
+            project: sld-bom-parser
+            tier: "3"
+      apps:
+        sld_bom_parser:
+          name: sld-bom-parser
+          description: "SLD-to-BOM Parser — Schneider Electric reference matching web app"
+          source_code_path: ./app
+          # Env vars injected by DAB at deploy time (supplements app/app.yaml)
+          # AGENT_ENDPOINT_NAME and DATABRICKS_WAREHOUSE_ID remain in app/app.yaml
+          # as valueFrom references resolved by the Databricks App runtime.
+          config:
+            command:
+              - bash
+              - start.sh
+            env:
+              - name: DATABRICKS_CATALOG
+                value: ${var.catalog}
+              - name: DATABRICKS_SCHEMA
+                value: ${var.schema}
+              - name: EXTRACTION_JOB_ID
+                value: "${resources.jobs.extraction.id}"
+              - name: MATCHING_JOB_ID
+                value: "${resources.jobs.matching.id}"
+          resources:
+            - job:
+                id: ${resources.jobs.extraction.id}
+                permission: CAN_MANAGE_RUN
+            - job:
+                id: ${resources.jobs.matching.id}
+                permission: CAN_MANAGE_RUN
