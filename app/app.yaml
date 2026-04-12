@@ -1,0 +1,14 @@
+command: ["bash", "start.sh"]
+env:
+  - name: AGENT_ENDPOINT_NAME
+    valueFrom: serving-endpoint
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: DATABRICKS_CATALOG
+    value: serverless_stable_bach_catalog
+  - name: DATABRICKS_SCHEMA
+    value: bom_parser
+  - name: EXTRACTION_JOB_ID
+    value: "811920885410866"
+  - name: MATCHING_JOB_ID
+    value: "330529910000908"

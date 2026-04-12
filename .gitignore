@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Databricks session files
+.databricks-resources.json
+.claude/
+
+# Diagram PDFs (customer data)
+diagrams/
+
+# Test outputs and overlays
+output/
+
+# Frontend build artifacts
+app/frontend/node_modules/
+app/frontend/dist/
+app/static/
+
+# DAB state
+.databricks/
+resources/

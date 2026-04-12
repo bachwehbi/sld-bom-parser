@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-950 text-gray-100 antialiased;
+}
+
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { @apply bg-transparent; }
+::-webkit-scrollbar-thumb { @apply bg-gray-700/50 rounded-full; }
+::-webkit-scrollbar-thumb:hover { @apply bg-gray-600; }
+* { scrollbar-width: thin; scrollbar-color: rgba(55, 65, 81, 0.5) transparent; }
+
+.glass {
+  @apply bg-gray-900/80 backdrop-blur-xl border border-gray-800/50;
+}
+
+.sidebar-transition {
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+::selection { @apply bg-blue-500/30; }
+
+textarea { field-sizing: content; }
+
+@keyframes toastEnter {
+  0%   { transform: translateX(100%); opacity: 0; }
+  100% { transform: translateX(0);    opacity: 1; }
+}
+@keyframes toastExit {
+  0%   { transform: translateX(0);    opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+.toast-enter { animation: toastEnter 0.3s ease-out forwards; }
+.toast-exit  { animation: toastExit  0.2s ease-in  forwards; }

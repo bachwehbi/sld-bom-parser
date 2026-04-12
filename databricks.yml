@@ -1,0 +1,12 @@
+bundle:
+  name: sld-bom-parser
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      profile: DEFAULT
+
+include:
+  - resources/*.yml
