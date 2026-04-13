@@ -37,15 +37,11 @@
 # MAGIC Before running this notebook on a new workspace:
 # MAGIC
 # MAGIC 1. Complete all `setup.py` steps and Tier 2 prerequisites (VS index must be ONLINE)
-# MAGIC 2. **Update `sld_bom_agent_model.py`** — open the file and set the hardcoded values at the top:
-# MAGIC    ```python
-# MAGIC    CATALOG           = "<your_catalog>"        # must match config.py
-# MAGIC    SQL_WAREHOUSE_ID  = "<your_warehouse_id>"   # any running SQL warehouse
-# MAGIC    EXTRACTION_JOB_ID = <extraction_job_id>     # printed by setup.py Step 9
-# MAGIC    MATCHING_JOB_ID   = <matching_job_id>       # printed by setup.py Step 9
-# MAGIC    ```
-# MAGIC    These values cannot be read from `config.py` because MLflow loads `sld_bom_agent_model.py`
-# MAGIC    in isolation at serving time.
+# MAGIC 2. **No manual edits needed for `sld_bom_agent_model.py`** — workspace-specific values
+# MAGIC    (`CATALOG`, `SQL_WAREHOUSE_ID`, `EXTRACTION_JOB_ID`, `MATCHING_JOB_ID`) are injected
+# MAGIC    automatically as environment variables when the serving endpoint is created/updated
+# MAGIC    by cell 8 of this notebook. The jobs are looked up by name (`sld-bom-extraction`,
+# MAGIC    `sld-bom-matching`) so no hardcoded IDs are needed.
 # MAGIC
 # MAGIC ## Notebook flow
 # MAGIC
@@ -661,12 +657,31 @@ w = WorkspaceClient()
 endpoint_name = "sld-bom-agent"
 model_version  = registered.version
 
+# Resolve warehouse and job IDs from the workspace (set by setup.py)
+_warehouse_id   = spark.conf.get("spark.databricks.workspaceUrl", "")  # placeholder — overridden below
+_warehouse_rows = spark.sql("SHOW WAREHOUSES").collect()
+_wh_id = next((r["id"] for r in _warehouse_rows if not r["name"].startswith("Starter")), None) or SQL_WAREHOUSE_ID
+
+# Job IDs — look up by name (created by setup.py Step 9)
+_ext_jobs = [j for j in w.jobs.list(name="sld-bom-extraction") if j.settings.name == "sld-bom-extraction"]
+_mat_jobs = [j for j in w.jobs.list(name="sld-bom-matching")   if j.settings.name == "sld-bom-matching"]
+_ext_job_id = str(_ext_jobs[0].job_id) if _ext_jobs else str(EXTRACTION_JOB_ID)
+_mat_job_id = str(_mat_jobs[0].job_id) if _mat_jobs else str(MATCHING_JOB_ID)
+print(f"Endpoint env: CATALOG={CATALOG} | WAREHOUSE={_wh_id} | EXTRACTION={_ext_job_id} | MATCHING={_mat_job_id}")
+
 served_entities = [
     ServedEntityInput(
         entity_name=AGENT_MODEL_NAME,
         entity_version=str(model_version),
         scale_to_zero_enabled=True,   # cost-efficient for demo/POC use
         workload_size="Small",         # 1 concurrent request — suitable for field use
+        environment_vars={
+            "DATABRICKS_CATALOG":      CATALOG,
+            "DATABRICKS_SCHEMA":       SCHEMA,
+            "DATABRICKS_WAREHOUSE_ID": _wh_id,
+            "EXTRACTION_JOB_ID":       _ext_job_id,
+            "MATCHING_JOB_ID":         _mat_job_id,
+        },
     )
 ]
 config = EndpointCoreConfigInput(served_entities=served_entities)
