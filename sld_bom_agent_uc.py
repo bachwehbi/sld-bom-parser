@@ -571,6 +571,7 @@ _table_resource = (
 )
 
 # DatabricksJob resource (available in mlflow >= 2.16) — lets the scoped token call jobs.run_now
+# DatabricksVolume — grants the scoped token READ VOLUME so the directory listing API works
 _resources = [
     DatabricksServingEndpoint(endpoint_name="databricks-claude-sonnet-4-6"),
     DatabricksSQLWarehouse(warehouse_id="61acc98b38c08e84"),
@@ -578,9 +579,30 @@ _resources = [
 ]
 try:
     from mlflow.models.resources import DatabricksJob
-    _resources.append(DatabricksJob(job_id=811920885410866))
+    _resources.append(DatabricksJob(job_id=int(_ext_job_id)))
+    _resources.append(DatabricksJob(job_id=int(_mat_job_id)))
 except ImportError:
     pass  # DatabricksJob not available in this mlflow version — job triggers use the SDK token
+try:
+    from mlflow.models.resources import DatabricksUCVolume
+    _resources.append(DatabricksUCVolume(
+        catalog_name=CATALOG,
+        schema_name=SCHEMA,
+        volume_name=VOLUME,
+    ))
+    print("✓ DatabricksUCVolume resource added — scoped token will get READ VOLUME")
+except ImportError:
+    # Fallback: grant READ VOLUME directly to the endpoint service principal via SQL
+    print("⚠ DatabricksUCVolume not available in this mlflow version")
+    print("  Granting READ VOLUME to the serving endpoint principal via SQL...")
+    try:
+        _ep_info = w.serving_endpoints.get("sld-bom-agent")
+        _ep_creator = _ep_info.creator
+        spark.sql(f"GRANT READ VOLUME ON VOLUME {CATALOG}.{SCHEMA}.{VOLUME} TO `{_ep_creator}`")
+        print(f"  ✓ READ VOLUME granted to {_ep_creator}")
+    except Exception as _grant_err:
+        print(f"  Could not auto-grant: {_grant_err}")
+        print(f"  Run manually: GRANT READ VOLUME ON VOLUME {CATALOG}.{SCHEMA}.{VOLUME} TO `<endpoint-principal>`")
 
 with mlflow.start_run(run_name="sld_bom_agent_v1"):
     model_info = mlflow.pyfunc.log_model(

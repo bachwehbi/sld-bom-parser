@@ -499,6 +499,59 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 13 — Grant READ VOLUME to the agent serving principal _(Tier 3+)_
+# MAGIC
+# MAGIC The model serving scoped token runs as a system service principal (not the model owner).
+# MAGIC This step grants it READ VOLUME so the `list_unprocessed_files` tool can run `LIST` via SQL.
+# MAGIC
+# MAGIC > Run this step **after** deploying the serving endpoint (cell 8 of `sld_bom_agent_uc`).
+# MAGIC > The service principal UUID changes per endpoint deployment — re-run this step if you re-create the endpoint.
+
+# COMMAND ----------
+
+# DBTITLE 1,Grant READ VOLUME to the agent service principal
+_sld_endpoint_name = "sld-bom-agent"
+
+try:
+    _ep_sp = spark.sql(
+        f"SELECT current_user() AS u"
+    )  # placeholder — we query via the warehouse which runs as the human user
+    # The actual SP is identified by running SELECT current_user() through the endpoint itself.
+    # Auto-detection: query the endpoint's token via the SDK and call the SQL API as the SP.
+    from databricks.sdk.service.sql import StatementState
+    _w_client = WorkspaceClient()
+    _warehouse_id_for_grant = "61acc98b38c08e84"
+
+    # Execute SELECT current_user() through the warehouse impersonating the endpoint SP
+    # We can't impersonate directly, but we can look at system.serving.served_entities
+    _sp_rows = spark.sql("""
+        SELECT served_entity_spec:serviceAccountEmail AS sp
+        FROM system.serving.served_entities
+        WHERE endpoint_name = 'sld-bom-agent'
+        ORDER BY update_timestamp DESC
+        LIMIT 1
+    """).collect()
+
+    if _sp_rows and _sp_rows[0]["sp"]:
+        _sp_id = _sp_rows[0]["sp"]
+        spark.sql(f"GRANT USE CATALOG  ON CATALOG {CATALOG} TO `{_sp_id}`")
+        spark.sql(f"GRANT USE SCHEMA   ON SCHEMA {CATALOG}.{SCHEMA} TO `{_sp_id}`")
+        spark.sql(f"GRANT READ VOLUME  ON VOLUME {CATALOG}.{SCHEMA}.{VOLUME} TO `{_sp_id}`")
+        spark.sql(f"GRANT SELECT       ON TABLE  {TABLE_NAME} TO `{_sp_id}`")
+        print(f"✓ Grants applied to serving SP: {_sp_id}")
+    else:
+        print("⚠ Could not auto-detect serving SP from system.serving.served_entities")
+        print("  After deploying the endpoint, run SELECT current_user() via the agent chat")
+        print("  then manually run:")
+        print(f"    GRANT READ VOLUME ON VOLUME {CATALOG}.{SCHEMA}.{VOLUME} TO `<sp-uuid>`")
+        print(f"    GRANT USE SCHEMA  ON SCHEMA {CATALOG}.{SCHEMA} TO `<sp-uuid>`")
+except Exception as _grant_ex:
+    print(f"⚠ Auto-grant failed: {_grant_ex}")
+    print("  Manually grant after endpoint deployment — see note above")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Next steps
 # MAGIC
 # MAGIC Once all steps pass:
