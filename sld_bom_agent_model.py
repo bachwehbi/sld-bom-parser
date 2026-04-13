@@ -206,23 +206,51 @@ class SLDBomAgent(ResponsesAgent):
 
     # ── Tool implementations ──────────────────────────────────────────────────
 
+    def _list_volume_pdfs(self):
+        """List PDF filenames in the volume using the Files REST API (no warehouse needed)."""
+        import requests as _req
+        host, auth_headers = self._workspace_auth()
+        if not host or not auth_headers.get("Authorization"):
+            return None, "Workspace credentials unavailable"
+
+        # UC Volumes Files API: GET /api/2.0/fs/files/Volumes/<catalog>/<schema>/<volume>
+        # A trailing slash signals directory listing; returns {"files": [...]}
+        url = f"{host}/api/2.0/fs/files/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}/"
+        try:
+            resp = _req.get(url, headers=auth_headers, timeout=30)
+        except Exception as e:
+            return None, f"Files API request failed: {e}"
+
+        if not resp.ok:
+            return None, f"Files API error {resp.status_code}: {resp.text[:300]}"
+
+        try:
+            data = resp.json()
+        except Exception:
+            return None, f"Files API non-JSON response: {resp.text[:300]}"
+
+        entries = data.get("files", [])
+        pdfs = sorted([
+            e["name"] for e in entries
+            if not e.get("is_directory", False)
+            and e.get("name", "").lower().endswith(".pdf")
+        ])
+        return pdfs, None
+
     def _tool_list_unprocessed_files(self):
         """List PDFs in the volume not yet successfully processed."""
-        try:
-            rows     = self._exec_sql(f"LIST '{VOLUME_PATH}'", max_rows=1000)
-            all_pdfs = sorted([
-                r["name"]
-                for r in rows
-                if isinstance(r, dict)
-                and "error" not in r
-                and str(r.get("name", "")).lower().endswith(".pdf")
-            ])
-        except Exception as e:
-            return {"error": f"Failed to list volume: {e}"}
+        all_pdfs, err = self._list_volume_pdfs()
+        if err is not None:
+            return {"error": f"Failed to list volume '{VOLUME_PATH}': {err}"}
 
         done_rows = self._exec_sql(
             f"SELECT file_name FROM {TABLE_NAME} WHERE status IN ('SUCCESS', 'IN_PROGRESS')"
         )
+        # Surface SQL errors so the LLM can report them
+        sql_errors = [r.get("error") for r in done_rows if isinstance(r, dict) and "error" in r]
+        if sql_errors and not any("error" not in r for r in done_rows):
+            return {"error": f"Failed to query processed files: {sql_errors[0]}"}
+
         processed_in_db = {
             r.get("file_name", "")
             for r in done_rows

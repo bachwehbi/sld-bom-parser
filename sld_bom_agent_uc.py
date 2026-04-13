@@ -658,15 +658,18 @@ endpoint_name = "sld-bom-agent"
 model_version  = registered.version
 
 # Resolve warehouse and job IDs from the workspace (set by setup.py)
-_warehouse_id   = spark.conf.get("spark.databricks.workspaceUrl", "")  # placeholder — overridden below
-_warehouse_rows = spark.sql("SHOW WAREHOUSES").collect()
-_wh_id = next((r["id"] for r in _warehouse_rows if not r["name"].startswith("Starter")), None) or SQL_WAREHOUSE_ID
+# Warehouse: pick any non-Starter warehouse via SDK
+_warehouses = list(w.warehouses.list())
+_wh_id = next(
+    (wh.id for wh in _warehouses if "Starter" not in (wh.name or "")),
+    "61acc98b38c08e84"   # fallback to the warehouse declared in _resources above
+)
 
 # Job IDs — look up by name (created by setup.py Step 9)
 _ext_jobs = [j for j in w.jobs.list(name="sld-bom-extraction") if j.settings.name == "sld-bom-extraction"]
 _mat_jobs = [j for j in w.jobs.list(name="sld-bom-matching")   if j.settings.name == "sld-bom-matching"]
-_ext_job_id = str(_ext_jobs[0].job_id) if _ext_jobs else str(EXTRACTION_JOB_ID)
-_mat_job_id = str(_mat_jobs[0].job_id) if _mat_jobs else str(MATCHING_JOB_ID)
+_ext_job_id = str(_ext_jobs[0].job_id) if _ext_jobs else "811920885410866"
+_mat_job_id = str(_mat_jobs[0].job_id) if _mat_jobs else "330529910000908"
 print(f"Endpoint env: CATALOG={CATALOG} | WAREHOUSE={_wh_id} | EXTRACTION={_ext_job_id} | MATCHING={_mat_job_id}")
 
 served_entities = [
