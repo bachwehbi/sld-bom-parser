@@ -213,23 +213,23 @@ class SLDBomAgent(ResponsesAgent):
         if not host or not auth_headers.get("Authorization"):
             return None, "Workspace credentials unavailable"
 
-        # UC Volumes Files API: GET /api/2.0/fs/files/Volumes/<catalog>/<schema>/<volume>
-        # A trailing slash signals directory listing; returns {"files": [...]}
-        url = f"{host}/api/2.0/fs/files/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}/"
+        # UC Volumes directory listing API: GET /api/2.0/fs/directories/Volumes/<catalog>/...
+        # Returns {"contents": [{"path": ..., "name": ..., "is_directory": bool, ...}]}
+        url = f"{host}/api/2.0/fs/directories/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
         try:
             resp = _req.get(url, headers=auth_headers, timeout=30)
         except Exception as e:
-            return None, f"Files API request failed: {e}"
+            return None, f"Directory API request failed: {e}"
 
         if not resp.ok:
-            return None, f"Files API error {resp.status_code}: {resp.text[:300]}"
+            return None, f"Directory API error {resp.status_code}: {resp.text[:300]}"
 
         try:
             data = resp.json()
         except Exception:
-            return None, f"Files API non-JSON response: {resp.text[:300]}"
+            return None, f"Directory API non-JSON response: {resp.text[:300]}"
 
-        entries = data.get("files", [])
+        entries = data.get("contents", [])
         pdfs = sorted([
             e["name"] for e in entries
             if not e.get("is_directory", False)
