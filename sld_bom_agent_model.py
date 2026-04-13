@@ -223,17 +223,19 @@ class SLDBomAgent(ResponsesAgent):
         done_rows = self._exec_sql(
             f"SELECT file_name FROM {TABLE_NAME} WHERE status IN ('SUCCESS', 'IN_PROGRESS')"
         )
-        processed = {
+        processed_in_db = {
             r.get("file_name", "")
             for r in done_rows
             if isinstance(r, dict) and "error" not in r
         }
 
-        unprocessed = [f for f in all_pdfs if f not in processed]
+        unprocessed = [f for f in all_pdfs if f not in processed_in_db]
+        processed_in_volume = [f for f in all_pdfs if f in processed_in_db]
         return {
-            "total_pdfs":  len(all_pdfs),
-            "processed":   len(processed),
-            "unprocessed": unprocessed,
+            "total_pdfs_in_volume": len(all_pdfs),
+            "processed_count":      len(processed_in_volume),
+            "unprocessed_count":    len(unprocessed),
+            "unprocessed_files":    unprocessed,
         }
 
     def _tool_trigger_extraction(self, file_name, model=None, enable_retry=None,
@@ -573,7 +575,12 @@ class SLDBomAgent(ResponsesAgent):
             "type": "function",
             "function": {
                 "name": "list_unprocessed_files",
-                "description": "List all PDF files in the volume that haven't been successfully processed yet.",
+                "description": (
+                    "List PDF files in the volume that have not been successfully extracted yet. "
+                    "Returns: total_pdfs_in_volume (int), processed_count (int), "
+                    "unprocessed_count (int), unprocessed_files (list of filenames). "
+                    "Use unprocessed_count and unprocessed_files to report pending work."
+                ),
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         },
