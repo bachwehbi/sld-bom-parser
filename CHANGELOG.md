@@ -4,6 +4,15 @@ All notable changes to the SLD-to-BOM Parser are documented here.
 
 ---
 
+## [0.2.1] — 2026-05-12
+
+### Added
+
+- `CLAUDE.md` — project-wide context for Claude Code sessions: pipeline architecture, key files, deployment conventions, known limitations. Environment-agnostic.
+- `AI_FUNCTIONS_EVAL.md` — benchmark results for `ai_parse_document` + `ai_extract` as SLD extraction alternatives, with conclusions.
+
+---
+
 ## [0.2.0] — 2026-05-12
 
 ### Fixed
