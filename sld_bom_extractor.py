@@ -451,6 +451,146 @@ def _normalize_component_type(val):
     return norm
 
 
+def _canonical_panel(panel_str):
+    """Normalize a panel name to a canonical token for cross-tile deduplication.
+
+    Large-format SLDs are split into overlapping tiles. The same physical panel
+    can be named differently in each tile depending on which part of the label
+    text was visible (e.g. "CG", "CGBT", "CUADRO GENERAL DE BAJA TENSIÓN").
+    Using an exact panel string in the dedup key means tile-boundary duplicates
+    always survive.  This function maps the most common Spanish/French panel name
+    variants to a short canonical token so the dedup key is stable across tiles.
+
+    Components whose panel name cannot be recognised (None, empty, or an
+    unrecognised string) are assigned "__NONE__" so they can still participate
+    in the canonical-key deduplication against known panels.
+
+    Returns a short uppercase token, or the original stripped/uppercased string
+    if no known pattern matches.
+    """
+    if not panel_str:
+        return "__NONE__"
+    s = panel_str.strip().upper()
+
+    # Main LV switchboard variants (CGBT / Cuadro General / Tableau Général)
+    if s in ("CG", "CGBT", "CGT", "TABLEAU GÉNÉRAL", "TABLEAU GENERAL") or \
+       any(k in s for k in ("CUADRO GENERAL", "CUADRO GRAL", "CG BAJA", "CGBT", "TABLEAU GÉN")):
+        return "__CGBT__"
+
+    # Secondary / distribution panel variants
+    if s in ("CS", "CS BAJA", "TDBT", "TABLEAU DE DISTRIBUTION") or \
+       any(k in s for k in ("CUADRO SECUNDARIO", "PLANTA BAJA", "CS-BAJA",
+                             "TABLEAU DIST", "TABLEAU SEC")):
+        return "__CS__"
+
+    # Geometry-based fallback names the model generates when it cannot read the label
+    if any(k in s for k in ("LOWER SECTION", "UPPER SECTION", "LEFT SECTION",
+                             "RIGHT SECTION", "SECTION LEFT", "SECTION RIGHT",
+                             "SECTION CENTRE", "SECTION CENTER")):
+        return "__GEO__"
+
+    return s
+
+
+def _ref_prefix(circuit_str):
+    """Extract the reference designator prefix from a circuit label.
+
+    Schneider SLD reference designators follow the pattern:
+        <letter(s)><digits>  e.g. "D35", "I17", "DX1", "Q3", "CB4", "CS-F16"
+
+    The system prompt instructs the model to always prefix the circuit field
+    with the designator followed by " - ":  "D35 - ALUMBRADO 22".
+    Returns the uppercase designator when found, or "" if no valid designator
+    pattern is present (falls back to full-circuit dedup in that case).
+    """
+    import re as _re
+    s = (circuit_str or "").strip()
+    if not s:
+        return ""
+    parts = s.split(" - ", 1)
+    if len(parts) < 2:
+        return ""   # No separator → no designator, treat as free-form label
+    candidate = parts[0].strip().upper()
+    # Accept short alphanumeric codes (letters, digits, hyphens, dots; ≤12 chars;
+    # starts with a letter; no trailing hyphen).  Free-form labels like
+    # "Int general" or "Caja moldeada" are rejected because they contain spaces
+    # or are too long.
+    if (candidate
+            and len(candidate) <= 12
+            and " " not in candidate
+            and not candidate.endswith("-")
+            and _re.match(r'^[A-Z][A-Z0-9\-\.]*$', candidate)):
+        return candidate
+    return ""
+
+
+def deduplicate_bom(components):
+    """Remove cross-tile duplicates from a merged component list.
+
+    Called after all tiles have been processed and their component lists merged.
+    Applies a three-level deduplication strategy:
+
+    Level 1 — exact key (single-page / non-tiled case, zero overhead):
+        (type, amperage, poles, panel, circuit)
+
+    Level 2 — canonical panel + ref designator (tile-boundary duplicates):
+        (type, amperage, poles, canonical_panel, ref_designator)
+        Handles the common case where the same device appears in two overlapping
+        tiles with slightly different panel names ("CG" vs "CGBT" vs "CUADRO
+        GENERAL DE BAJA TENSIÓN") but the same reference designator.
+
+    Level 3 — full circuit label, panel-agnostic (title-block panel name drift):
+        (type, amperage, poles, circuit)
+        Handles the case where the model uses surrounding text (project name,
+        document title) as the panel label when the actual panel name is not
+        visible in a tile.  Applied only when a reference designator was found
+        (avoids collapsing genuinely different "Circuit 1" entries across panels).
+
+    Args:
+        components: List of component dicts (mixed legacy / canonical field names).
+
+    Returns:
+        Deduplicated list of component dicts.
+    """
+    seen_exact    = set()
+    seen_canonical = set()
+    seen_circuit  = set()
+    unique = []
+
+    for comp in components:
+        tipo = _normalize_component_type(
+            comp.get("component_type") or comp.get("Que és") or comp.get("Que es") or ""
+        )
+        amp     = str(comp.get("amperage_a")  or comp.get("Calibre (A)") or "")
+        poles   = str(comp.get("poles")        or comp.get("Polos")       or "")
+        panel   = str(comp.get("panel")        or comp.get("Cuadro")      or "")
+        circuit = str(comp.get("circuit")      or comp.get("Circuito")    or "")
+
+        # Level 1: exact match
+        exact_key = (tipo, amp, poles, panel, circuit)
+        if exact_key in seen_exact:
+            continue
+        seen_exact.add(exact_key)
+
+        ref = _ref_prefix(circuit)
+        if ref:
+            # Level 2: canonical panel + ref designator
+            canon_key = (tipo, amp, poles, _canonical_panel(panel), ref)
+            if canon_key in seen_canonical:
+                continue
+            seen_canonical.add(canon_key)
+
+            # Level 3: full circuit label regardless of panel (title-block drift)
+            circ_key = (tipo, amp, poles, circuit)
+            if circ_key in seen_circuit:
+                continue
+            seen_circuit.add(circ_key)
+
+        unique.append(comp)
+
+    return unique
+
+
 def extract_bom(client, system_prompt, images, model, max_tokens=16384):
     """Run Claude vision extraction over the rasterized diagram images.
 
@@ -506,23 +646,7 @@ def extract_bom(client, system_prompt, images, model, max_tokens=16384):
         except ValueError:
             print(f"      -> No JSON in response")
 
-    # Deduplicate: normalize type first to collapse accent variants
-    seen = set()
-    unique = []
-    for comp in all_components:
-        tipo = _normalize_component_type(
-            comp.get("Que és") or comp.get("Que es") or comp.get("component_type") or ""
-        )
-        key = (
-            tipo,
-            str(comp.get("Calibre (A)") or comp.get("amperage_a") or ""),
-            str(comp.get("Polos") or comp.get("poles") or ""),
-            str(comp.get("Cuadro") or comp.get("panel") or ""),
-            str(comp.get("Circuito") or comp.get("circuit") or ""),
-        )
-        if key not in seen:
-            seen.add(key)
-            unique.append(comp)
+    unique = deduplicate_bom(all_components)
     print(f"    Total: {len(all_components)} raw -> {len(unique)} after dedup")
     return json.dumps(unique, ensure_ascii=False)
 
@@ -847,9 +971,14 @@ def filter_table_clusters(clusters, page_w, page_h):
         Filtered list of clusters.
     """
     return [c for c in clusters
-            if c["cy"] <= page_h * 0.85
+            if c["cy"] <= page_h * 0.91
             and not (c["cx"] > page_w * 0.92 and page_w > 5000)
-            and not (c["span_count"] == 1 and c["circuit_id"] and not c["calibre"])]
+            # Dangling ID-only spans in the bottom 15% are title-block artefacts.
+            # Keep lone-ID clusters in the main diagram area — they're the only
+            # positional evidence for large components (MCCBs, IGAs) whose spec
+            # text block lands further than cluster_radius from the label.
+            and not (c["span_count"] == 1 and c["circuit_id"] and not c["calibre"]
+                     and c["cy"] > page_h * 0.85)]
 
 
 def _circ_word_score(c_circ, cluster_text_joined):
@@ -1016,7 +1145,18 @@ def match_bom_to_pdf_text(bom_components, pdf_path, dpi=DPI):
     doc.close()
     page_w, page_h = page_dims.get(0, (0, 0))
 
-    print(f"    Clusters found: {len(clusters)} across {len(page_dims)} page(s)")
+    # Diagnostic: cluster count by vertical zone (helps diagnose missing CS sections)
+    if page_h:
+        zones = {"top50": 0, "50-65": 0, "65-80": 0, "80-91": 0, "91+": 0}
+        for cl in clusters:
+            pct = cl["cy"] / page_h
+            if pct <= 0.50:   zones["top50"] += 1
+            elif pct <= 0.65: zones["50-65"] += 1
+            elif pct <= 0.80: zones["65-80"] += 1
+            elif pct <= 0.91: zones["80-91"] += 1
+            else:             zones["91+"]   += 1
+        cluster_diag = f"Clusters: {len(clusters)} | zones: {zones}"
+        print(f"    {cluster_diag}")
 
     matched, unmatched, used = [], [], set()
 
@@ -1050,7 +1190,10 @@ def match_bom_to_pdf_text(bom_components, pdf_path, dpi=DPI):
 
             # Circuit ID match — strongest signal, acts like a primary key.
             # e.g., BOM says Circuito="D17 RESERVA", cluster has circuit_id="D17"
-            if cl["circuit_id"] and cl["circuit_id"] in c_circ:
+            # Use word-boundary check so "D1" does not match "D10 - SOMETHING".
+            cid = cl["circuit_id"]
+            if cid and c_circ.startswith(cid) and (
+                    len(c_circ) == len(cid) or not c_circ[len(cid)].isalnum()):
                 score += 10
 
             # Calibre (rated current) match
@@ -1195,7 +1338,8 @@ def match_bom_to_pdf_text(bom_components, pdf_path, dpi=DPI):
 
 def run_extraction(client, system_prompt, images, pdf_path, model,
                    enable_retry=True, max_retries=2, threshold=0.75,
-                   verbose=True, dpi=DPI, progress_callback=None):
+                   verbose=True, dpi=DPI, progress_callback=None,
+                   pdf_type=None):
     """Run extraction + matching with optional retry logic.
 
     This is the recommended entry point for both the production notebook and the
@@ -1258,7 +1402,35 @@ def run_extraction(client, system_prompt, images, pdf_path, model,
 
         _cb(f"Matching {len(components)} components to PDF vector text (attempt {attempt}/{total_attempts})")
         matched, unmatched = match_bom_to_pdf_text(components, pdf_path, dpi=dpi)
-        rate = len(matched) / len(components) if components else 0.0
+
+        # Post-match filter: drop unmatched components from panels that indicate
+        # the model read surrounding title-block or fallback text as a panel name.
+        # Matched components (have confirmed PDF coordinates) are never filtered.
+        _PHANTOM_PANEL_TOKENS = (
+            "INSTALACI",      # "INSTALACIONES. UNIFILAR", "INSTALACION" etc.
+            "LOWER SECTION", "UPPER SECTION",
+            "LEFT SECTION",  "RIGHT SECTION",
+            "SECTION LEFT",  "SECTION RIGHT",
+            "SECTION CENTRE","SECTION CENTER",
+        )
+        def _panel_is_phantom(panel_val):
+            p = (panel_val or "").strip().upper()
+            if not p:
+                return True  # blank/None panel with no PDF match = phantom
+            return any(tok in p for tok in _PHANTOM_PANEL_TOKENS)
+
+        pre_filter = len(unmatched)
+        unmatched = [c for c in unmatched if not _panel_is_phantom(c.get("panel"))]
+        if verbose and len(unmatched) < pre_filter:
+            print(f"    Filtered {pre_filter - len(unmatched)} unmatched phantom-panel components")
+
+        total = len(matched) + len(unmatched)
+        if total == 0:
+            rate = 1.0   # no components on this page → perfect (nothing to miss)
+        elif pdf_type == "scanned":
+            rate = 1.0   # scanned PDF: vector verification not possible; vision result accepted
+        else:
+            rate = len(matched) / total
 
         if verbose:
             status = "✓ threshold met" if rate >= threshold else f"below threshold ({threshold:.0%})"

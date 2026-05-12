@@ -421,6 +421,7 @@ else:
                 threshold=MATCH_RATE_THRESHOLD,
                 verbose=True,
                 progress_callback=lambda msg: write_progress(page_file_name, file_path, "IN_PROGRESS", msg),
+                pdf_type=pdf_type,
             )
             matched       = result["matched"]
             unmatched     = result["unmatched"]

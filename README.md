@@ -35,6 +35,7 @@
    - [Deploy / redeploy the web app](#deploy--redeploy-the-web-app)
 7. [Configuration reference](#configuration-reference)
 8. [Troubleshooting](#troubleshooting)
+9. [Changelog](CHANGELOG.md)
 ---
 ## Architecture overview
 

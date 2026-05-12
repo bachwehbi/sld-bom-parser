@@ -54,6 +54,9 @@ The response must be directly parseable by json.loads().
 5. Include every component visible in the diagram, one object per component.
 6. Output valid JSON array only — nothing before or after the array brackets.
 7. CRITICAL — reference designators in "circuit": Each component symbol in a Schneider SLD has a short reference designator printed immediately next to it (e.g. D35, I17, DX1, Q3). This designator uniquely identifies the component's position. Always include it at the start of the "circuit" field followed by " - " and the circuit/load name: "D35 - ALUMBRADO 22", "I17 - ALUMBRADO 22", "DX1 - OFFICE BARRA 1". If two components share the same branch (e.g. an RCD and the MCB below it), they share the same load name but will have different designators — capture each component's own designator. If the designator is not legible, omit it (do not guess).
+8. DC protection boxes ("Cuadro protecciones DC", "Cuadro FV DC", "DC combiner box" or similar): these contain DC-side string fuses or DC switches — NOT AC circuit breakers. Do NOT extract the internal DC string fuses. Only extract the AC-side protection devices (MCB, RCD, SPD) that connect the inverter's AC output to the main switchboard.
+9. Panel name — use ONLY the label printed on the panel bus or header rectangle in the diagram. Do NOT use the project name, client name, document title, or any text from the title block as a panel name. If the panel name is not legible, use "UNKNOWN".
+10. Legend / LEYENDA blocks: symbol definition tables labelled "LEYENDA", "LÉGENDE", "LEGENDE", or "LEGEND" contain generic placeholder symbols (often with "XX A" values) — do NOT extract them as components.
 
 ## Examples:
 [
